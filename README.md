@@ -1,13 +1,4 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '3e16c9ca-b3ef-42c0-96da-d75fe5c2f1e1'
-  PropagateID: '3e16c9ca-b3ef-42c0-96da-d75fe5c2f1e1'
-  ReservedCode1: '67ba30dc-bd09-4aa4-9c48-84cb79e1fcbc'
-  ReservedCode2: '67ba30dc-bd09-4aa4-9c48-84cb79e1fcbc'
----
+
 
 # 书海 - 本地电子书阅读器
 
@@ -123,4 +114,3 @@ cd android
 
 MIT
 
-> AI生成
