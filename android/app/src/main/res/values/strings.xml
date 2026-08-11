@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">书海</string>
+    <string name="title_activity_main">书海</string>
+    <string name="package_name">com.shuhai.reader</string>
+    <string name="custom_url_scheme">com.shuhai.reader</string>
+</resources>
