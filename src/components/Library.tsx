@@ -1,14 +1,13 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { BookRecord } from '../types'
 import { detectFormat, supportedExtensions } from '../types'
-import { getAllBooks, addBook, deleteBook, updateBookProgress } from '../lib/db'
+import { addBook, deleteBook, getAllBooks, setBookFavorite } from '../lib/db'
 import { loadBook } from '../lib/formats'
-import { recordReading } from '../lib/db'
 
 const formatColors: Record<string, string> = {
-  epub: '#4CAF50', pdf: '#2196F3', txt: '#9E9E9E', mobi: '#FF9800',
-  azw3: '#FF5722', fb2: '#9C27B0', cbz: '#F44336', cbr: '#E91E63',
-  docx: '#1976D2', md: '#388E3C', html: '#FFC107', rtf: '#607D8B',
+  epub: '#2f7d62', pdf: '#b94b44', txt: '#607080', mobi: '#a96322',
+  azw3: '#985236', fb2: '#715b96', cbz: '#b03e5b', cbr: '#9a456d',
+  docx: '#3568a8', md: '#427a4d', html: '#9b742c', rtf: '#65717b',
 }
 
 interface LibraryProps {
@@ -16,6 +15,7 @@ interface LibraryProps {
 }
 
 type SortMode = 'recent' | 'title' | 'progress'
+type ShelfFilter = 'all' | 'reading' | 'favorite' | 'finished'
 
 export function Library({ onOpenBook }: LibraryProps) {
   const [books, setBooks] = useState<BookRecord[]>([])
@@ -23,346 +23,260 @@ export function Library({ onOpenBook }: LibraryProps) {
   const [importProgress, setImportProgress] = useState('')
   const [search, setSearch] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('recent')
+  const [filter, setFilter] = useState<ShelfFilter>('all')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
 
-  const refresh = useCallback(async () => {
-    const all = await getAllBooks()
-    setBooks(all)
-  }, [])
+  const refresh = useCallback(async () => setBooks(await getAllBooks()), [])
+  useEffect(() => { refresh() }, [refresh])
 
-  useEffect(() => {
-    refresh()
-  }, [refresh])
-
-  // 从 IndexedDB 恢复时可能 blob 丢失，需要重新从 DB 获取最新进度
-  useEffect(() => {
-    // 合并最新进度
-    refresh()
-  }, [refresh])
-
-  const handleImport = async () => {
+  const handleImport = () => {
     const input = document.createElement('input')
     input.type = 'file'
     input.multiple = true
     input.accept = supportedExtensions.join(',')
-
-    input.onchange = async (e) => {
-      const files = (e.target as HTMLInputElement).files
-      if (!files || files.length === 0) return
-
+    input.onchange = async event => {
+      const files = Array.from((event.target as HTMLInputElement).files || [])
+      if (!files.length) return
       setImporting(true)
-      const fileArr = Array.from(files)
-
-      for (let i = 0; i < fileArr.length; i++) {
-        const file = fileArr[i]
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index]
         const format = detectFormat(file.name)
         if (format === 'unknown') continue
-
-        setImportProgress(`正在导入 ${i + 1}/${fileArr.length}: ${file.name}`)
-
+        setImportProgress(`正在整理 ${index + 1}/${files.length} · ${file.name}`)
+        let meta = { title: file.name.replace(/\.[^.]+$/, ''), author: '未知作者' }
         try {
-          const loaded = await loadBook(file, format)
-          const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-          const record: BookRecord = {
-            id,
-            fileName: file.name,
-            format,
-            fileSize: file.size,
-            addedAt: Date.now(),
-            progress: 0,
-            meta: loaded.meta,
-            blob: file,
-          }
-          await addBook(record)
-        } catch (err) {
-          console.error(`导入 ${file.name} 失败:`, err)
-          const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-          const record: BookRecord = {
-            id,
-            fileName: file.name,
-            format,
-            fileSize: file.size,
-            addedAt: Date.now(),
-            progress: 0,
-            meta: { title: file.name.replace(/\.[^.]+$/, ''), author: '未知作者' },
-            blob: file,
-          }
-          await addBook(record)
+          meta = (await loadBook(file, format)).meta
+        } catch (error) {
+          console.warn(`无法读取 ${file.name} 的元数据`, error)
         }
+        await addBook({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          fileName: file.name,
+          format,
+          fileSize: file.size,
+          addedAt: Date.now(),
+          progress: 0,
+          favorite: false,
+          meta,
+          blob: file,
+        })
       }
-
       setImporting(false)
       setImportProgress('')
       await refresh()
     }
-
     input.click()
   }
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (confirm('确定要删除这本书吗？')) {
-      await deleteBook(id)
-      await refresh()
-    }
+  const handleDelete = async (book: BookRecord) => {
+    if (!confirm(`从书库删除《${book.meta.title}》？\n原始文件不会从设备文件夹中删除。`)) return
+    await deleteBook(book.id)
+    await refresh()
   }
 
-  const handleContinueReading = async (book: BookRecord) => {
-    onOpenBook(book)
+  const handleFavorite = async (book: BookRecord) => {
+    await setBookFavorite(book.id, !book.favorite)
+    setBooks(current => current.map(item => item.id === book.id ? { ...item, favorite: !item.favorite } : item))
   }
 
-  const sortedFiltered = useMemo(() => {
-    let result = books
-    if (search) {
-      const q = search.toLowerCase()
-      result = result.filter(b =>
-        b.meta.title.toLowerCase().includes(q) ||
-        b.meta.author.toLowerCase().includes(q)
-      )
-    }
-    switch (sortMode) {
-      case 'title':
-        result = [...result].sort((a, b) => a.meta.title.localeCompare(b.meta.title, 'zh'))
-        break
-      case 'progress':
-        result = [...result].sort((a, b) => b.progress - a.progress)
-        break
-      default:
-        result = [...result].sort((a, b) => (b.lastReadAt || b.addedAt) - (a.lastReadAt || a.addedAt))
-    }
+  const visibleBooks = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase()
+    let result = books.filter(book => {
+      if (filter === 'reading' && !(book.progress > 0 && book.progress < 0.99)) return false
+      if (filter === 'favorite' && !book.favorite) return false
+      if (filter === 'finished' && book.progress < 0.99) return false
+      if (!query) return true
+      return `${book.meta.title} ${book.meta.author} ${book.fileName}`.toLocaleLowerCase().includes(query)
+    })
+    if (sortMode === 'title') result = [...result].sort((a, b) => a.meta.title.localeCompare(b.meta.title, 'zh'))
+    else if (sortMode === 'progress') result = [...result].sort((a, b) => b.progress - a.progress)
+    else result = [...result].sort((a, b) => (b.lastReadAt || b.addedAt) - (a.lastReadAt || a.addedAt))
     return result
-  }, [books, search, sortMode])
+  }, [books, filter, search, sortMode])
 
-  const continueBooks = useMemo(
-    () => books.filter(b => b.progress > 0 && b.progress < 0.99).sort((a, b) => b.progress - a.progress).slice(0, 5),
-    [books]
-  )
+  const continueBook = useMemo(() => (
+    books
+      .filter(book => book.progress > 0 && book.progress < 0.99)
+      .sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0))[0]
+  ), [books])
+
+  const readingCount = books.filter(book => book.progress > 0 && book.progress < 0.99).length
+  const finishedCount = books.filter(book => book.progress >= 0.99).length
 
   return (
-    <div className="library-page">
-      {/* 渐变头部 */}
-      <header className="lib-header">
-        <div className="lib-header-inner">
-          <h1 className="lib-logo">
-            <span className="lib-logo-icon">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-              </svg>
-            </span>
-            <span>书海</span>
-          </h1>
-          <button className="lib-import-btn" onClick={handleImport} disabled={importing}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <span>{importing ? '导入中' : '导入'}</span>
-          </button>
+    <main className="library-page">
+      <header className="library-header">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11a2 2 0 0 1 2 2v15a2.5 2.5 0 0 0-2.5-2.5H4z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v17a2.5 2.5 0 0 1 2.5-2.5H20z"/></svg>
+          </span>
+          <div>
+            <h1>书海</h1>
+            <p>你的离线阅读空间</p>
+          </div>
         </div>
+        <button className="btn btn-primary import-button" onClick={handleImport}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4L8 7M5 14v5h14v-5"/></svg>
+          导入图书
+        </button>
       </header>
 
-      {/* 搜索和排序 */}
-      {books.length > 0 && (
-        <div className="lib-toolbar">
-          <div className="lib-search">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}>
-              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-            <input
-              type="text"
-              placeholder="搜索书名或作者"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <button
-            className={`lib-sort-btn ${sortMode === 'recent' ? 'active' : ''}`}
-            onClick={() => setSortMode(s => s === 'recent' ? 'title' : s === 'title' ? 'progress' : 'recent')}
-            title="排序方式"
-          >
-            {sortMode === 'recent' ? '最近' : sortMode === 'title' ? '书名' : '进度'}
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-        </div>
-      )}
-
-      <div className="lib-scroll">
-        {/* 空状态 */}
-        {books.length === 0 && !importing && (
-          <div className="lib-empty">
-            <div className="lib-empty-illustration">
-              <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3 }}>
-                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-              </svg>
+      <div className="library-scroll">
+        {continueBook && !search && filter === 'all' && (
+          <section className="continue-strip" aria-label="继续阅读">
+            <BookCover book={continueBook} compact />
+            <div className="continue-copy">
+              <span className="section-label">继续阅读</span>
+              <h2>{continueBook.meta.title}</h2>
+              <p>{continueBook.meta.author}</p>
+              <div className="continue-progress-row">
+                <div className="progress-track"><span style={{ width: `${Math.max(2, continueBook.progress * 100)}%` }} /></div>
+                <span>{Math.round(continueBook.progress * 100)}%</span>
+              </div>
             </div>
-            <h2>书库空空如也</h2>
-            <p>导入你的电子书开始阅读之旅</p>
-            <div className="lib-empty-formats">
-              {['EPUB', 'PDF', 'MOBI', 'AZW3', 'TXT', 'FB2', 'CBZ', 'DOCX', 'MD'].map(f => (
-                <span key={f} className="format-pill">{f}</span>
-              ))}
-            </div>
-            <button className="lib-empty-cta" onClick={handleImport}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              导入电子书
+            <button className="continue-action" onClick={() => onOpenBook(continueBook)} aria-label={`继续阅读 ${continueBook.meta.title}`}>
+              继续
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
             </button>
-          </div>
+          </section>
         )}
 
-        {/* 继续阅读 */}
-        {continueBooks.length > 0 && !search && (
-          <section className="lib-section">
-            <h3 className="lib-section-title">继续阅读</h3>
-            <div className="lib-continue-scroll">
-              {continueBooks.map(book => (
-                <div key={book.id} className="continue-card" onClick={() => handleContinueReading(book)}>
-                  <div className="continue-cover">
-                    {book.meta.cover ? (
-                      <img src={book.meta.cover} alt="" />
-                    ) : (
-                      <div className="continue-cover-ph" style={{ background: formatColors[book.format] || '#666' }}>
-                        <span>{book.format.toUpperCase()}</span>
-                      </div>
-                    )}
-                    <div className="continue-progress-ring" style={{
-                      background: `conic-gradient(var(--accent) ${book.progress * 360}deg, rgba(0,0,0,0.3) 0)`
-                    }}>
-                      <span>{Math.round(book.progress * 100)}%</span>
-                    </div>
-                  </div>
-                  <div className="continue-info">
-                    <div className="continue-title">{book.meta.title}</div>
-                    <div className="continue-author">{book.meta.author}</div>
-                    <div className="continue-bar">
-                      <div className="continue-bar-fill" style={{ width: `${book.progress * 100}%` }} />
-                    </div>
-                  </div>
-                </div>
-              ))}
+        <section className="library-toolbar" aria-label="书库筛选">
+          <label className="search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+            <input value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索书名、作者或文件名" />
+            {search && <button onClick={() => setSearch('')} aria-label="清空搜索">×</button>}
+          </label>
+          <div className="toolbar-actions">
+            <select value={sortMode} onChange={event => setSortMode(event.target.value as SortMode)} aria-label="排序方式">
+              <option value="recent">最近阅读</option>
+              <option value="title">书名排序</option>
+              <option value="progress">阅读进度</option>
+            </select>
+            <div className="view-toggle" aria-label="视图方式">
+              <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')} aria-label="网格视图">
+                <svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg>
+              </button>
+              <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')} aria-label="列表视图">
+                <svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
+              </button>
             </div>
-          </section>
-        )}
+          </div>
+        </section>
 
-        {/* 全部书籍 */}
-        {sortedFiltered.length > 0 && (
-          <section className="lib-section">
-            <h3 className="lib-section-title">
-              {search ? `搜索结果 (${sortedFiltered.length})` : `全部书籍 (${sortedFiltered.length})`}
-            </h3>
-            {viewMode === 'grid' ? (
-              <div className="book-grid">
-                {sortedFiltered.map(book => (
-                  <BookCard key={book.id} book={book} onOpen={onOpenBook} onDelete={handleDelete} />
-                ))}
-              </div>
-            ) : (
-              <div className="book-list">
-                {sortedFiltered.map(book => (
-                  <BookListItem key={book.id} book={book} onOpen={onOpenBook} onDelete={handleDelete} />
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        {books.length > 0 && sortedFiltered.length === 0 && (
-          <div className="lib-empty-search">
-            <p>未找到匹配「{search}」的书籍</p>
+        {books.length > 0 && (
+          <div className="shelf-summary">
+            <span><strong>{books.length}</strong> 本藏书</span>
+            <span><strong>{readingCount}</strong> 本阅读中</span>
+            <span><strong>{finishedCount}</strong> 本已读完</span>
           </div>
         )}
-      </div>
 
-      {/* 浮动导入按钮 */}
-      {books.length > 0 && (
-        <button className="fab" onClick={handleImport} disabled={importing} title="导入书籍">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </button>
-      )}
+        <nav className="filter-tabs" aria-label="书架分类">
+          {([
+            ['all', '全部'], ['reading', '阅读中'], ['favorite', '收藏'], ['finished', '已读完'],
+          ] as Array<[ShelfFilter, string]>).map(([key, label]) => (
+            <button key={key} className={filter === key ? 'active' : ''} onClick={() => setFilter(key)}>{label}</button>
+          ))}
+        </nav>
 
-      {/* 导入遮罩 */}
-      {importing && (
-        <div className="import-overlay">
-          <div className="import-card">
-            <div className="spinner" />
-            <p>{importProgress || '正在导入...'}</p>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ========== 书籍卡片组件 ==========
-function BookCard({ book, onOpen, onDelete }: {
-  book: BookRecord
-  onOpen: (b: BookRecord) => void
-  onDelete: (id: string, e: React.MouseEvent) => void
-}) {
-  const color = formatColors[book.format] || '#666'
-  return (
-    <div className="book-card" onClick={() => onOpen(book)}>
-      <div className="book-cover" style={{ '--cover-color': color } as React.CSSProperties}>
-        {book.meta.cover ? (
-          <img src={book.meta.cover} alt={book.meta.title} />
+        {visibleBooks.length > 0 ? (
+          <section className={viewMode === 'grid' ? 'book-grid' : 'book-list'} aria-label="图书列表">
+            {visibleBooks.map(book => (
+              <BookItem
+                key={book.id}
+                book={book}
+                mode={viewMode}
+                onOpen={() => onOpenBook(book)}
+                onFavorite={() => handleFavorite(book)}
+                onDelete={() => handleDelete(book)}
+              />
+            ))}
+          </section>
         ) : (
-          <div className="book-cover-ph">
-            <div className="book-cover-spine" style={{ background: color }} />
-            <div className="book-cover-text">
-              <span className="book-cover-emoji">📖</span>
-              <span className="book-cover-title">{book.meta.title}</span>
-            </div>
-          </div>
+          <EmptyLibrary hasBooks={books.length > 0} onImport={handleImport} onReset={() => { setSearch(''); setFilter('all') }} />
         )}
-        <span className="book-format-badge" style={{ background: color }}>{book.format}</span>
-        {book.progress > 0 && (
-          <div className="book-progress-bar">
-            <div className="book-progress-bar-fill" style={{ width: `${book.progress * 100}%` }} />
+      </div>
+
+      {importing && (
+        <div className="import-overlay" role="status" aria-live="polite">
+          <div className="import-card">
+            <div className="book-loader" aria-hidden="true"><span/><span/><span/></div>
+            <strong>正在加入书库</strong>
+            <p>{importProgress}</p>
+            <small>图书只保存在当前设备</small>
           </div>
-        )}
-        <button className="book-del-btn" onClick={(e) => onDelete(book.id, e)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+      )}
+    </main>
+  )
+}
+
+function BookItem({ book, mode, onOpen, onFavorite, onDelete }: {
+  book: BookRecord
+  mode: 'grid' | 'list'
+  onOpen: () => void
+  onFavorite: () => void
+  onDelete: () => void
+}) {
+  return (
+    <article className={`book-item ${mode}`}>
+      <button className="book-open" onClick={onOpen} aria-label={`打开 ${book.meta.title}`}>
+        <BookCover book={book} compact={mode === 'list'} />
+        <div className="book-info">
+          <h2>{book.meta.title}</h2>
+          <p>{book.meta.author || '未知作者'}</p>
+          <div className="book-meta-line">
+            <span>{book.format.toUpperCase()}</span>
+            <span>{formatFileSize(book.fileSize)}</span>
+          </div>
+          <div className="book-progress" aria-label={`阅读进度 ${Math.round(book.progress * 100)}%`}>
+            <span style={{ width: `${book.progress * 100}%` }} />
+          </div>
+          <small>{book.progress >= 0.99 ? '已读完' : book.progress > 0 ? `已读 ${Math.round(book.progress * 100)}%` : '尚未开始'}</small>
+        </div>
+      </button>
+      <div className="book-item-actions">
+        <button className={book.favorite ? 'favorite active' : 'favorite'} onClick={onFavorite} aria-label={book.favorite ? '取消收藏' : '收藏'} title={book.favorite ? '取消收藏' : '收藏'}>
+          <svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></svg>
+        </button>
+        <button onClick={onDelete} aria-label="从书库删除" title="从书库删除">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
         </button>
       </div>
-      <div className="book-info">
-        <div className="book-title">{book.meta.title}</div>
-        <div className="book-author">{book.meta.author}</div>
-      </div>
+    </article>
+  )
+}
+
+function BookCover({ book, compact = false }: { book: BookRecord; compact?: boolean }) {
+  const title = book.meta.title.trim() || book.fileName
+  return (
+    <div className={`book-cover ${compact ? 'compact' : ''}`} style={{ backgroundColor: formatColors[book.format] || '#52606d' }}>
+      {book.meta.cover ? <img src={book.meta.cover} alt="" /> : (
+        <>
+          <span className="cover-title">{title.slice(0, 18)}</span>
+          <span className="cover-author">{book.meta.author || '未知作者'}</span>
+          <span className="cover-format">{book.format.toUpperCase()}</span>
+        </>
+      )}
     </div>
   )
 }
 
-// ========== 列表项组件 ==========
-function BookListItem({ book, onOpen, onDelete }: {
-  book: BookRecord
-  onOpen: (b: BookRecord) => void
-  onDelete: (id: string, e: React.MouseEvent) => void
-}) {
-  const color = formatColors[book.format] || '#666'
+function EmptyLibrary({ hasBooks, onImport, onReset }: { hasBooks: boolean; onImport: () => void; onReset: () => void }) {
   return (
-    <div className="book-list-item" onClick={() => onOpen(book)}>
-      <div className="book-list-cover" style={{ background: color }}>
-        {book.meta.cover ? <img src={book.meta.cover} alt="" /> : <span>{book.format.toUpperCase()}</span>}
-      </div>
-      <div className="book-list-info">
-        <div className="book-list-title">{book.meta.title}</div>
-        <div className="book-list-author">{book.meta.author}</div>
-        <div className="book-list-meta">
-          <span>{formatFileSize(book.fileSize)}</span>
-          {book.progress > 0 && <span>· 已读 {Math.round(book.progress * 100)}%</span>}
-        </div>
-      </div>
-      <button className="book-list-del" onClick={(e) => onDelete(book.id, e)}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
+    <section className="empty-library">
+      <div className="empty-book" aria-hidden="true"><span/><span/><span/></div>
+      <h2>{hasBooks ? '没有找到符合条件的图书' : '从一本书开始'}</h2>
+      <p>{hasBooks ? '换个关键词或清除筛选条件。' : '导入设备中的电子书。无需账号，文件和阅读记录都留在本地。'}</p>
+      <button className="btn btn-primary" onClick={hasBooks ? onReset : onImport}>{hasBooks ? '清除筛选' : '选择电子书'}</button>
+      {!hasBooks && <small>支持 EPUB、PDF、MOBI、AZW3、TXT、FB2、CBZ、DOCX 等格式</small>}
+    </section>
   )
 }
 
 function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }

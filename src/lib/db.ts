@@ -31,6 +31,15 @@ export interface ReadingStat {
   pagesRead: number
 }
 
+export interface ReaderBackup {
+  version: 1
+  exportedAt: string
+  books: Array<Omit<BookRecord, 'blob'> & { blob: string; blobType: string }>
+  settings: ReadingSettings
+  bookmarks: Bookmark[]
+  stats: ReadingStat[]
+}
+
 let dbInstance: IDBPDatabase<BookDB> | null = null
 
 async function getDB(): Promise<IDBPDatabase<BookDB>> {
@@ -96,12 +105,31 @@ export async function updateBookProgress(
   }
 }
 
+export async function setBookFavorite(id: string, favorite: boolean): Promise<void> {
+  const db = await getDB()
+  const book = await db.get('books', id)
+  if (!book) return
+  book.favorite = favorite
+  await db.put('books', book)
+}
+
+export async function updateBookMeta(
+  id: string,
+  meta: Partial<BookRecord['meta']>,
+): Promise<void> {
+  const db = await getDB()
+  const book = await db.get('books', id)
+  if (!book) return
+  book.meta = { ...book.meta, ...meta }
+  await db.put('books', book)
+}
+
 // ========== 设置操作 ==========
 
 export async function getSettings(): Promise<ReadingSettings> {
   const db = await getDB()
   const settings = await db.get('settings', 'reading')
-  return settings || { ...defaultSettings }
+  return { ...defaultSettings, ...(settings || {}) }
 }
 
 export async function saveSettings(settings: ReadingSettings): Promise<void> {
@@ -133,13 +161,13 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-export async function recordReading(minutes: number, pagesRead: number = 0): Promise<void> {
+export async function recordReading(minutes: number, pagesRead: number = 0, opened: boolean = false): Promise<void> {
   const db = await getDB()
   const key = todayStr()
   const stat = await db.get('stats', key) || { date: key, totalMinutes: 0, booksOpened: 0, pagesRead: 0 }
   stat.totalMinutes += minutes
   stat.pagesRead += pagesRead
-  stat.booksOpened += 1
+  if (opened) stat.booksOpened += 1
   await db.put('stats', stat, key)
 }
 
@@ -179,4 +207,63 @@ export async function clearAllData(): Promise<void> {
   await db.clear('books')
   await db.clear('bookmarks')
   await db.clear('stats')
+  await db.clear('settings')
+}
+
+function blobToDataURL(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error || new Error('读取图书文件失败'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function dataURLToBlob(dataURL: string, fallbackType: string): Blob {
+  const [header, payload] = dataURL.split(',', 2)
+  if (!payload) throw new Error('备份中的图书数据无效')
+  const mime = header.match(/^data:([^;]+)/)?.[1] || fallbackType || 'application/octet-stream'
+  const bytes = atob(payload)
+  const array = new Uint8Array(bytes.length)
+  for (let i = 0; i < bytes.length; i++) array[i] = bytes.charCodeAt(i)
+  return new Blob([array], { type: mime })
+}
+
+export async function createBackup(): Promise<ReaderBackup> {
+  const db = await getDB()
+  const books = await db.getAll('books')
+  const serializedBooks = await Promise.all(books.map(async ({ blob, ...book }) => ({
+    ...book,
+    blob: await blobToDataURL(blob),
+    blobType: blob.type,
+  })))
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    books: serializedBooks,
+    settings: await getSettings(),
+    bookmarks: await db.getAll('bookmarks'),
+    stats: await db.getAll('stats'),
+  }
+}
+
+export async function restoreBackup(backup: ReaderBackup): Promise<void> {
+  if (!backup || backup.version !== 1 || !Array.isArray(backup.books)) {
+    throw new Error('不支持的备份文件')
+  }
+  const db = await getDB()
+  const tx = db.transaction(['books', 'settings', 'bookmarks', 'stats'], 'readwrite')
+  await Promise.all([
+    tx.objectStore('books').clear(),
+    tx.objectStore('bookmarks').clear(),
+    tx.objectStore('stats').clear(),
+  ])
+  for (const item of backup.books) {
+    const { blob, blobType, ...book } = item
+    await tx.objectStore('books').put({ ...book, blob: dataURLToBlob(blob, blobType) })
+  }
+  for (const bookmark of backup.bookmarks || []) await tx.objectStore('bookmarks').put(bookmark)
+  for (const stat of backup.stats || []) await tx.objectStore('stats').put(stat, stat.date)
+  await tx.objectStore('settings').put({ ...defaultSettings, ...(backup.settings || {}) }, 'reading')
+  await tx.done
 }

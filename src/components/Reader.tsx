@@ -2,8 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import type { BookRecord, ReadingSettings, TOCItem, Bookmark } from '../types'
 import { themeColors, defaultSettings } from '../types'
 import { loadBook, type LoadedBook } from '../lib/formats'
-import { EpubJSReader, PDFJSReader, HTMLReader, type RelocateDetail } from '../lib/reader'
-import { getSettings, saveSettings, updateBookProgress, getBookmarks, addBookmark, deleteBookmark } from '../lib/db'
+import { EpubJSReader, PDFJSReader, HTMLReader, type RelocateDetail, type SearchResult } from '../lib/reader'
+import { getSettings, saveSettings, updateBookProgress, getBookmarks, addBookmark, deleteBookmark, recordReading } from '../lib/db'
 
 interface ReaderProps {
   book: BookRecord
@@ -18,6 +18,7 @@ export function Reader({ book, onBack }: ReaderProps) {
   const loadedBookRef = useRef<LoadedBook | null>(null)
   const settingsRef = useRef<ReadingSettings>(defaultSettings)
   const barHideTimerRef = useRef<number | null>(null)
+  const locationIndexRef = useRef(book.sectionIndex || 0)
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -25,6 +26,7 @@ export function Reader({ book, onBack }: ReaderProps) {
   const [showToc, setShowToc] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
   const [toc, setToc] = useState<TOCItem[]>([])
   const [currentTocIndex, setCurrentTocIndex] = useState(-1)
   const [progress, setProgress] = useState(book.progress)
@@ -33,6 +35,14 @@ export function Reader({ book, onBack }: ReaderProps) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [toast, setToast] = useState<string | null>(null)
   const [retryCount, setRetryCount] = useState(0)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => recordReading(1).catch(() => {}), 60_000)
+    return () => window.clearInterval(timer)
+  }, [book.id])
 
   useEffect(() => {
     let cancelled = false
@@ -65,6 +75,7 @@ export function Reader({ book, onBack }: ReaderProps) {
             if (cancelled) return
             setProgress(detail.fraction)
             setSectionLabel(detail.sectionLabel || '')
+            locationIndexRef.current = detail.index
             const cfi = epubReaderRef.current?.getCFI()
             updateBookProgress(book.id, detail.fraction, cfi, detail.index)
           })
@@ -75,6 +86,7 @@ export function Reader({ book, onBack }: ReaderProps) {
             if (cancelled) return
             setProgress(detail.fraction)
             setSectionLabel(detail.sectionLabel || '')
+            locationIndexRef.current = detail.index
             updateBookProgress(book.id, detail.fraction, undefined, detail.index)
           })
           pdfReaderRef.current = reader
@@ -84,6 +96,7 @@ export function Reader({ book, onBack }: ReaderProps) {
             if (cancelled) return
             setProgress(detail.fraction)
             setSectionLabel(detail.sectionLabel || '')
+            locationIndexRef.current = detail.index
             updateBookProgress(book.id, detail.fraction, undefined, detail.index)
           })
           htmlReaderRef.current = reader
@@ -171,7 +184,7 @@ export function Reader({ book, onBack }: ReaderProps) {
   const toggleBars = () => {
     setShowBars((v) => {
       const nv = !v
-      if (!nv) { setShowToc(false); setShowSettings(false); setShowBookmarks(false) }
+      if (!nv) { setShowToc(false); setShowSettings(false); setShowBookmarks(false); setShowSearch(false) }
       return nv
     })
   }
@@ -180,7 +193,7 @@ export function Reader({ book, onBack }: ReaderProps) {
     if (barHideTimerRef.current) clearTimeout(barHideTimerRef.current)
     if (showBars) {
       barHideTimerRef.current = window.setTimeout(() => {
-        setShowBars(false); setShowToc(false); setShowSettings(false); setShowBookmarks(false)
+        setShowBars(false); setShowToc(false); setShowSettings(false); setShowBookmarks(false); setShowSearch(false)
       }, 5000)
     }
   }
@@ -213,7 +226,7 @@ export function Reader({ book, onBack }: ReaderProps) {
   }
 
   const handleAddBookmark = async () => {
-    const cfi = epubReaderRef.current?.getCFI() || `section-${currentTocIndex}`
+    const cfi = epubReaderRef.current?.getCFI() || `section-${locationIndexRef.current}`
     const label = sectionLabel || `${Math.round(progress * 100)}%`
     const bm: Bookmark = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, bookId: book.id, cfi, label, createdAt: Date.now() }
     await addBookmark(bm)
@@ -228,7 +241,32 @@ export function Reader({ book, onBack }: ReaderProps) {
 
   const handleBookmarkClick = (bm: Bookmark) => {
     if (epubReaderRef.current && bm.cfi && !bm.cfi.startsWith('section-')) epubReaderRef.current.goToTOCItem(bm.cfi)
+    else if (bm.cfi.startsWith('section-')) {
+      const index = Number(bm.cfi.slice('section-'.length))
+      if (htmlReaderRef.current) htmlReaderRef.current.goToSection(index)
+      if (pdfReaderRef.current) pdfReaderRef.current.goToPage(index + 1)
+    }
     setShowBookmarks(false)
+  }
+
+  const handleSearch = async (event?: React.FormEvent) => {
+    event?.preventDefault()
+    if (!searchQuery.trim()) { setSearchResults([]); return }
+    setSearching(true)
+    try {
+      if (epubReaderRef.current) setSearchResults(await epubReaderRef.current.search(searchQuery))
+      else if (pdfReaderRef.current) setSearchResults(await pdfReaderRef.current.search(searchQuery))
+      else if (htmlReaderRef.current) setSearchResults(htmlReaderRef.current.search(searchQuery))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const handleSearchResult = (result: SearchResult) => {
+    if (epubReaderRef.current && typeof result.target === 'string') epubReaderRef.current.goToTOCItem(result.target)
+    else if (pdfReaderRef.current && typeof result.target === 'number') pdfReaderRef.current.goToPage(result.target)
+    else if (htmlReaderRef.current && typeof result.target === 'number') htmlReaderRef.current.goToSection(result.target)
+    setShowSearch(false)
   }
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 2300) }
@@ -240,14 +278,14 @@ export function Reader({ book, onBack }: ReaderProps) {
         case 'ArrowRight': case ' ': handleNext(); break
         case 'ArrowLeft': handlePrev(); break
         case 'Escape':
-          if (showToc || showSettings || showBookmarks) { setShowToc(false); setShowSettings(false); setShowBookmarks(false) }
+          if (showToc || showSettings || showBookmarks || showSearch) { setShowToc(false); setShowSettings(false); setShowBookmarks(false); setShowSearch(false) }
           else onBack()
           break
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [loading, showToc, showSettings, showBookmarks]) // eslint-disable-line
+  }, [loading, showToc, showSettings, showBookmarks, showSearch]) // eslint-disable-line
 
   const renderTOC = (items: TOCItem[], level = 0) => {
     return items.map((item, i) => {
@@ -271,6 +309,9 @@ export function Reader({ book, onBack }: ReaderProps) {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
         <div className="reader-topbar-title">{book.meta.title}</div>
+        <button onClick={() => setShowSearch(true)} className="reader-icon-btn" title="书内搜索" aria-label="书内搜索">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        </button>
         <button onClick={handleAddBookmark} className="reader-icon-btn" title="添加书签">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
         </button>
@@ -332,6 +373,32 @@ export function Reader({ book, onBack }: ReaderProps) {
               {toc.length > 0 ? renderTOC(toc) : <p className="text-secondary text-sm" style={{ textAlign: 'center', padding: 20 }}>本书没有目录</p>}
             </div>
           </div>
+        </>
+      )}
+
+      {showSearch && (
+        <>
+          <div className="drawer-overlay visible" onClick={() => setShowSearch(false)} />
+          <aside className="drawer drawer-left visible" aria-label="书内搜索">
+            <div className="drawer-header"><span>书内搜索</span><button onClick={() => setShowSearch(false)} aria-label="关闭">✕</button></div>
+            <div className="drawer-body search-drawer-body">
+              <form className="reader-search" onSubmit={handleSearch}>
+                <input autoFocus value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="输入要查找的文字" />
+                <button className="btn btn-primary" disabled={searching}>{searching ? '查找中' : '查找'}</button>
+              </form>
+              {searchResults.length > 0 ? (
+                <div className="reader-search-results">
+                  <p>找到 {searchResults.length} 处结果</p>
+                  {searchResults.map((result, index) => (
+                    <button key={`${String(result.target)}-${index}`} onClick={() => handleSearchResult(result)}>
+                      <strong>{result.label}</strong>
+                      <span>{result.excerpt}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : searchQuery && !searching ? <p className="drawer-empty">没有找到相关内容</p> : <p className="drawer-hint">搜索在设备本地完成，不会上传书籍内容。</p>}
+            </div>
+          </aside>
         </>
       )}
 

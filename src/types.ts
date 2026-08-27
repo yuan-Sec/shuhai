@@ -35,6 +35,8 @@ export interface BookRecord {
   addedAt: number
   lastReadAt?: number
   progress: number // 0-1
+  favorite?: boolean
+  tags?: string[]
   cfi?: string // foliate-js CFI 位置
   sectionIndex?: number
   meta: BookMeta
@@ -51,6 +53,9 @@ export interface ReadingSettings {
   theme: 'dark' | 'light' | 'sepia' | 'cream'
   flow: 'paginated' | 'scrolled'
   brightness: number
+  readingGoalMinutes: number
+  highContrast: boolean
+  reduceMotion: boolean
 }
 
 /** 目录项 */
@@ -79,34 +84,37 @@ export const defaultSettings: ReadingSettings = {
   theme: 'dark',
   flow: 'paginated',
   brightness: 100,
+  readingGoalMinutes: 30,
+  highContrast: false,
+  reduceMotion: false,
 }
 
 /** 主题配色 */
 export const themeColors = {
   dark: {
-    bg: '#0d1117',
-    bgSecondary: '#161d27',
+    bg: '#101513',
+    bgSecondary: '#171e1b',
     text: '#e6edf3',
-    textSecondary: '#8b949e',
-    accent: '#58a6ff',
-    border: '#30363d',
-    surface: '#21262d',
+    textSecondary: '#aab7b1',
+    accent: '#79b8a4',
+    border: '#35413c',
+    surface: '#202925',
   },
   light: {
     bg: '#ffffff',
     bgSecondary: '#f6f8fa',
     text: '#1f2328',
     textSecondary: '#656d76',
-    accent: '#0969da',
-    border: '#d0d7de',
-    surface: '#f6f8fa',
+    accent: '#2f6f5e',
+    border: '#c9d2ce',
+    surface: '#f1f5f3',
   },
   sepia: {
     bg: '#f4ecd8',
     bgSecondary: '#e8dcc4',
     text: '#5b4636',
     textSecondary: '#8a7a65',
-    accent: '#a0522d',
+    accent: '#8b5a2b',
     border: '#d4c4a8',
     surface: '#ede0c8',
   },
@@ -115,7 +123,7 @@ export const themeColors = {
     bgSecondary: '#f0e8d8',
     text: '#3a352d',
     textSecondary: '#7a7060',
-    accent: '#8b6914',
+    accent: '#75581e',
     border: '#d8ccb8',
     surface: '#f2eadb',
   },

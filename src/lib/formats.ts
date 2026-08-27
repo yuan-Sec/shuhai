@@ -28,6 +28,43 @@ function escapeHTML(text: string): string {
   return div.innerHTML
 }
 
+/**
+ * 电子书内容来自用户文件，渲染前必须移除脚本、事件处理器和远程资源。
+ * 允许 data:image、blob 与包内相对路径，保证阅读过程不会主动联网。
+ */
+export function sanitizeBookHTML(input: string): string {
+  const documentNode = new DOMParser().parseFromString(input, 'text/html')
+  documentNode.querySelectorAll('script, iframe, object, embed, form, input, button, meta, base, link').forEach(node => node.remove())
+
+  documentNode.querySelectorAll('*').forEach(node => {
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase()
+      const value = attr.value.trim()
+      if (name.startsWith('on') || name === 'srcdoc') {
+        node.removeAttribute(attr.name)
+        continue
+      }
+      if (name === 'style' && /(?:url\s*\(|expression\s*\()/i.test(value)) {
+        node.removeAttribute(attr.name)
+        continue
+      }
+      if (name === 'href') {
+        if (/^(?:javascript|data):/i.test(value) || /^(?:https?:)?\/\//i.test(value)) {
+          node.removeAttribute(attr.name)
+        }
+        continue
+      }
+      if (name === 'src' || name === 'poster' || name === 'xlink:href') {
+        const isSafeImageData = /^data:image\//i.test(value)
+        const isLocal = /^(?:blob:|\.\.?\/|#)/i.test(value) || (!/^[a-z][a-z\d+.-]*:/i.test(value) && !value.startsWith('//'))
+        if (!isSafeImageData && !isLocal) node.removeAttribute(attr.name)
+      }
+    }
+  })
+
+  return documentNode.body.innerHTML
+}
+
 function extractFileName(file: File): string {
   return file.name.replace(/\.[^.]+$/, '')
 }
@@ -63,7 +100,7 @@ async function loadEPUB(file: File): Promise<LoadedBook> {
     epubBook: book,
     toc,
     meta,
-    totalSections: book.spine?.length || 1,
+    totalSections: book.packaging?.spine?.length || 1,
     isFixedLayout: book.packaging?.metadata?.layout === 'pre-paginated',
     isImageBased: false,
   }
@@ -106,7 +143,7 @@ async function loadMOBI(file: File, format: BookFormat): Promise<LoadedBook> {
   try {
     const foliateView = await import('../foliate/view.js')
     const { makeBook } = foliateView
-    const book = await makeBook(file)
+    const book: any = await makeBook(file)
     if (book && book.sections) {
       const htmlParts: string[] = []
       for (const section of book.sections) {
@@ -119,7 +156,7 @@ async function loadMOBI(file: File, format: BookFormat): Promise<LoadedBook> {
       }
       if (htmlParts.length > 0) {
         const htmlContent = htmlParts.join('\n<hr class="chapter-divider">\n')
-        const toc: TOCItem[] = (book.toc || []).slice(0, 50).map(t => ({ label: t.label, href: t.href }))
+        const toc: TOCItem[] = (book.toc || []).slice(0, 50).map((t: any) => ({ label: t.label, href: t.href }))
         return {
           format,
           htmlContent,
@@ -148,7 +185,7 @@ async function loadFB2(file: File): Promise<LoadedBook> {
   try {
     const foliateView = await import('../foliate/view.js')
     const { makeBook } = foliateView
-    const book = await makeBook(file)
+    const book: any = await makeBook(file)
     if (book && book.sections) {
       const htmlParts: string[] = []
       for (const section of book.sections) {
@@ -164,7 +201,7 @@ async function loadFB2(file: File): Promise<LoadedBook> {
         return {
           format: 'fb2',
           htmlContent,
-          toc: (book.toc || []).slice(0, 50).map(t => ({ label: t.label, href: t.href })),
+          toc: (book.toc || []).slice(0, 50).map((t: any) => ({ label: t.label, href: t.href })),
           meta: {
             title: book.metadata?.title ? String(book.metadata.title) : extractFileName(file),
             author: book.metadata?.author ? String(book.metadata.author) : '未知作者',
@@ -187,7 +224,7 @@ async function loadCBZ(file: File): Promise<LoadedBook> {
   try {
     const foliateView = await import('../foliate/view.js')
     const { makeBook } = foliateView
-    const book = await makeBook(file)
+    const book: any = await makeBook(file)
     if (book && book.sections) {
       const htmlParts: string[] = []
       for (const section of book.sections) {
@@ -237,7 +274,7 @@ function splitTXTChapters(text: string): { title: string; content: string }[] {
   const patterns = [
     /^第[一二三四五六七八九十百千零\d]+[章节回卷]/m,
     /^Chapter\s+\d+/im,
-    /^[【\[]?.{1,20}[】\]]$/m,
+    /^[【[]?.{1,20}[】\]]$/m,
   ]
   for (const pattern of patterns) {
     if (pattern.test(text)) {
@@ -346,8 +383,7 @@ export async function loadBook(file: File, format: BookFormat): Promise<LoadedBo
       const html = await loadDOCX(file)
       return { format: 'docx', htmlContent: html, toc: [], meta: { title: extractFileName(file), author: '未知作者' }, totalSections: 1, isFixedLayout: false, isImageBased: false }
     }
-    case 'html':
-    case 'htm': {
+    case 'html': {
       const html = await file.text()
       return { format: 'html', htmlContent: html, toc: [], meta: { title: extractFileName(file), author: '未知作者' }, totalSections: 1, isFixedLayout: false, isImageBased: false }
     }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getAllBooks, getStats, getTotalStats, type ReadingStat } from '../lib/db'
+import { getAllBooks, getSettings, getStats, getTotalStats, type ReadingStat } from '../lib/db'
 
 export function Stats() {
   const [totalBooks, setTotalBooks] = useState(0)
@@ -8,6 +8,7 @@ export function Stats() {
   const [totalMinutes, setTotalMinutes] = useState(0)
   const [stats, setStats] = useState<ReadingStat[]>([])
   const [formatDist, setFormatDist] = useState<Record<string, number>>({})
+  const [goalMinutes, setGoalMinutes] = useState(30)
 
   useEffect(() => {
     (async () => {
@@ -28,12 +29,19 @@ export function Stats() {
         dist[b.format] = (dist[b.format] || 0) + 1
       }
       setFormatDist(dist)
+      setGoalMinutes((await getSettings()).readingGoalMinutes)
     })()
   }, [])
 
-  const maxMinutes = Math.max(...stats.map(s => s.totalMinutes), 60)
+  const maxMinutes = Math.max(...stats.map(s => s.totalMinutes), goalMinutes)
   const totalWeekMinutes = stats.slice(-7).reduce((sum, s) => sum + s.totalMinutes, 0)
   const avgPerDay = Math.round(totalWeekMinutes / 7)
+  const todayMinutes = stats.at(-1)?.totalMinutes || 0
+  const goalProgress = Math.min(100, Math.round((todayMinutes / Math.max(1, goalMinutes)) * 100))
+  const streak = [...stats].reverse().reduce((days, stat, index) => {
+    if (index === days && stat.totalMinutes > 0) return days + 1
+    return days
+  }, 0)
 
   return (
     <div className="stats-page">
@@ -42,6 +50,17 @@ export function Stats() {
       </header>
 
       <div className="stats-scroll">
+        <section className="reading-insight">
+          <div className="goal-ring" style={{ '--goal': `${goalProgress * 3.6}deg` } as React.CSSProperties}>
+            <div><strong>{goalProgress}%</strong><span>今日目标</span></div>
+          </div>
+          <div className="insight-copy">
+            <span className="section-label">今日阅读</span>
+            <h2>{todayMinutes >= goalMinutes ? '今天的目标已完成' : `再读 ${Math.max(0, goalMinutes - todayMinutes)} 分钟`}</h2>
+            <p>已阅读 {formatMinutes(todayMinutes)} · 连续 {streak} 天</p>
+          </div>
+        </section>
+
         {/* 概览卡片 */}
         <div className="stats-cards-row">
           <div className="stats-card">
@@ -124,7 +143,7 @@ export function Stats() {
             <Achievement icon="🔥" title="初读" desc="打开第一本书" unlocked={totalBooks >= 1} />
             <Achievement icon="📖" title="深入阅读" desc="阅读进度过半" unlocked={readingBooks > 0 || finishedBooks > 0} />
             <Achievement icon="✅" title="完读达人" desc="读完一本书" unlocked={finishedBooks >= 1} />
-            <Achievement icon="📅" title="坚持一周" desc="连续7天阅读" unlocked={totalWeekMinutes > 0} />
+            <Achievement icon="📅" title="坚持一周" desc="连续7天阅读" unlocked={streak >= 7} />
             <Achievement icon="🌟" title="书海漫游" desc="收藏10本书" unlocked={totalBooks >= 10} />
           </div>
         </div>

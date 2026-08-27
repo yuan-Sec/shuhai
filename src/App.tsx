@@ -1,10 +1,11 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { BookRecord } from './types'
+import { themeColors } from './types'
 import { Library } from './components/Library'
 import { Reader } from './components/Reader'
 import { Stats } from './components/Stats'
 import { Settings } from './components/Settings'
-import { recordReading } from './lib/db'
+import { getSettings, recordReading } from './lib/db'
 
 type Tab = 'library' | 'stats' | 'settings'
 
@@ -13,9 +14,25 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('library')
   const [libraryVersion, setLibraryVersion] = useState(0)
 
+  useEffect(() => {
+    getSettings().then(settings => {
+      const colors = themeColors[settings.theme]
+      const root = document.documentElement
+      root.style.setProperty('--bg', colors.bg)
+      root.style.setProperty('--bg-secondary', colors.bgSecondary)
+      root.style.setProperty('--bg-surface', colors.surface)
+      root.style.setProperty('--text', colors.text)
+      root.style.setProperty('--text-secondary', colors.textSecondary)
+      root.style.setProperty('--accent', colors.accent)
+      root.style.setProperty('--border', colors.border)
+      root.dataset.contrast = settings.highContrast ? 'high' : 'normal'
+      root.dataset.motion = settings.reduceMotion ? 'reduced' : 'full'
+    }).catch(() => {})
+  }, [libraryVersion])
+
   const handleOpenBook = useCallback((book: BookRecord) => {
     setCurrentBook(book)
-    recordReading(1).catch(() => {})
+    recordReading(0, 0, true).catch(() => {})
   }, [])
 
   const handleBack = useCallback(() => {

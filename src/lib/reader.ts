@@ -2,7 +2,7 @@
 // EpubJSReader (epubjs) | PDFJSReader (pdfjs-dist) | HTMLReader (自定义)
 // 不再依赖 foliate-js 渲染
 
-import type { LoadedBook } from './formats'
+import { sanitizeBookHTML, type LoadedBook } from './formats'
 
 /** relocate 回调 */
 export interface RelocateDetail {
@@ -12,6 +12,12 @@ export interface RelocateDetail {
 }
 
 type RelocateHandler = (detail: RelocateDetail) => void
+
+export interface SearchResult {
+  label: string
+  excerpt: string
+  target: string | number
+}
 
 // ============ EPUB 阅读器 (epubjs) ============
 
@@ -26,7 +32,7 @@ export class EpubJSReader {
     this.onRelocate = onRelocate
   }
 
-  async open(loaded: LoadedBook, cfi?: string, fraction?: number) {
+  async open(loaded: LoadedBook, cfi?: string, _fraction?: number) {
     if (!loaded.epubBook) throw new Error('EpubJSReader 需要 epubBook 对象')
     this.epubBook = loaded.epubBook
 
@@ -79,6 +85,26 @@ export class EpubJSReader {
       const cfi = await this.epubBook.locations.cfiFromPercentage(fraction)
       await this.rendition.display(cfi)
     } catch { /* ignore */ }
+  }
+
+  async search(query: string): Promise<SearchResult[]> {
+    if (!this.epubBook || !query.trim()) return []
+    const results: SearchResult[] = []
+    const spineItems = this.epubBook.spine?.spineItems || []
+    for (const item of spineItems) {
+      if (results.length >= 80) break
+      try {
+        await item.load(this.epubBook.load.bind(this.epubBook))
+        const matches = item.find?.(query.trim()) || []
+        for (const match of matches.slice(0, 12)) {
+          results.push({ label: match.excerpt || '搜索结果', excerpt: match.excerpt || query.trim(), target: match.cfi })
+          if (results.length >= 80) break
+        }
+      } finally {
+        item.unload?.()
+      }
+    }
+    return results
   }
 
   getCFI(): string | undefined {
@@ -198,6 +224,31 @@ export class PDFJSReader {
     // PDF 目录跳转 — 简化实现
   }
 
+  async goToPage(page: number) {
+    await this.renderPage(Math.max(1, Math.min(this.totalPages, page)))
+  }
+
+  async search(query: string): Promise<SearchResult[]> {
+    if (!this.pdfDoc || !query.trim()) return []
+    const needle = query.trim().toLocaleLowerCase()
+    const results: SearchResult[] = []
+    for (let pageNum = 1; pageNum <= this.totalPages && results.length < 80; pageNum++) {
+      const page = await this.pdfDoc.getPage(pageNum)
+      const content = await page.getTextContent()
+      const text = content.items.map((item: any) => item.str || '').join(' ')
+      const lower = text.toLocaleLowerCase()
+      const index = lower.indexOf(needle)
+      if (index >= 0) {
+        results.push({
+          label: `第 ${pageNum} 页`,
+          excerpt: text.slice(Math.max(0, index - 38), index + needle.length + 58).trim(),
+          target: pageNum,
+        })
+      }
+    }
+    return results
+  }
+
   async goToFraction(fraction: number) {
     const page = Math.max(1, Math.ceil(fraction * this.totalPages))
     await this.renderPage(page)
@@ -232,6 +283,14 @@ export class HTMLReader {
     margin: number
     theme: string
   } | null = null
+  private scrollFrame: number | null = null
+  private onScroll = () => {
+    if (this.scrollFrame !== null) return
+    this.scrollFrame = requestAnimationFrame(() => {
+      this.scrollFrame = null
+      this.notifyRelocate()
+    })
+  }
 
   constructor(container: HTMLElement, onRelocate: RelocateHandler) {
     this.container = container
@@ -261,6 +320,13 @@ export class HTMLReader {
     }
 
     this.renderSection()
+    if (fraction && this.sectionContents.length === 1) {
+      requestAnimationFrame(() => {
+        const max = Math.max(0, this.container.scrollHeight - this.container.clientHeight)
+        this.container.scrollTop = max * fraction
+        this.notifyRelocate()
+      })
+    }
   }
 
   private renderSection() {
@@ -268,7 +334,7 @@ export class HTMLReader {
 
     const wrapper = document.createElement('div')
     wrapper.className = 'html-reader-wrapper'
-    wrapper.innerHTML = this.sectionContents[this.currentSection] || ''
+    wrapper.innerHTML = sanitizeBookHTML(this.sectionContents[this.currentSection] || '')
 
     // 图片懒加载
     wrapper.querySelectorAll('img').forEach(img => {
@@ -286,12 +352,19 @@ export class HTMLReader {
 
     this.container.appendChild(wrapper)
     this.contentEl = wrapper
+    this.container.removeEventListener('scroll', this.onScroll)
+    this.container.addEventListener('scroll', this.onScroll, { passive: true })
+    this.notifyRelocate()
+  }
 
+  private notifyRelocate() {
+    const scrollable = Math.max(0, this.container.scrollHeight - this.container.clientHeight)
+    const intraSection = scrollable > 0 ? this.container.scrollTop / scrollable : 0
     const fraction = this.sectionContents.length > 1
-      ? (this.currentSection + 0.5) / this.sectionContents.length
-      : 0
+      ? (this.currentSection + intraSection) / this.sectionContents.length
+      : intraSection
     this.onRelocate({
-      fraction,
+      fraction: Math.max(0, Math.min(1, fraction)),
       index: this.currentSection,
       sectionLabel: this.toc[this.currentSection]?.label,
     })
@@ -341,8 +414,33 @@ export class HTMLReader {
     if (this.sectionContents.length > 0) {
       this.currentSection = Math.floor(fraction * this.sectionContents.length)
       this.renderSection()
-      this.container.scrollTop = 0
+      requestAnimationFrame(() => {
+        const max = Math.max(0, this.container.scrollHeight - this.container.clientHeight)
+        const scaled = fraction * this.sectionContents.length - this.currentSection
+        this.container.scrollTop = max * Math.max(0, Math.min(1, scaled))
+      })
     }
+  }
+
+  search(query: string): SearchResult[] {
+    const needle = query.trim().toLocaleLowerCase()
+    if (!needle) return []
+    const parser = new DOMParser()
+    const results: SearchResult[] = []
+    this.sectionContents.forEach((html, index) => {
+      if (results.length >= 80) return
+      const text = parser.parseFromString(sanitizeBookHTML(html), 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() || ''
+      const lower = text.toLocaleLowerCase()
+      const match = lower.indexOf(needle)
+      if (match >= 0) {
+        results.push({
+          label: this.toc[index]?.label || `第 ${index + 1} 节`,
+          excerpt: text.slice(Math.max(0, match - 38), match + needle.length + 58),
+          target: index,
+        })
+      }
+    })
+    return results
   }
 
   setSettings(settings: {
@@ -362,6 +460,8 @@ export class HTMLReader {
   }
 
   close() {
+    this.container.removeEventListener('scroll', this.onScroll)
+    if (this.scrollFrame !== null) cancelAnimationFrame(this.scrollFrame)
     this.container.innerHTML = ''
     this.contentEl = null
   }

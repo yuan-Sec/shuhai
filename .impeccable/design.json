@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-27T00:00:00+08:00",
+  "source": "DESIGN.md",
+  "tokens": {
+    "colors": {
+      "background": "#101513",
+      "surface": "#171e1b",
+      "surfaceRaised": "#202925",
+      "text": "#f3f6f4",
+      "textMuted": "#aab7b1",
+      "accent": "#79b8a4",
+      "accentStrong": "#2f6f5e",
+      "border": "#35413c",
+      "danger": "#d97070"
+    },
+    "typography": {
+      "body": "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      "reading": "Georgia, Noto Serif SC, serif"
+    },
+    "radius": { "sm": 6, "md": 10, "lg": 14 },
+    "spacing": { "1": 8, "2": 16, "3": 24, "4": 32 }
+  },
+  "extensions": {
+    "colorMeta": {
+      "tonalRamp": ["#0b0f0d", "#101513", "#171e1b", "#202925", "#35413c", "#5f746b", "#79b8a4", "#d9e9e2"]
+    },
+    "shadows": {
+      "structural": "0 6px 18px rgba(0, 0, 0, 0.18)"
+    },
+    "motion": {
+      "fast": "120ms",
+      "normal": "180ms",
+      "reduced": "0ms"
+    },
+    "breakpoints": {
+      "mobile": 640,
+      "tablet": 900,
+      "desktop": 1200
+    }
+  },
+  "components": {
+    "primaryButton": { "minHeight": 44, "background": "accent", "foreground": "background", "radius": "md" },
+    "secondaryButton": { "minHeight": 44, "background": "surface", "border": "border", "radius": "md" },
+    "searchField": { "minHeight": 44, "background": "surface", "border": "border", "radius": "md" },
+    "bookCard": { "background": "surface", "radius": "lg", "content": ["cover", "title", "author", "progress", "actions"] },
+    "bottomNavigation": { "minHeight": 72, "background": "surface", "border": "border", "active": "accent" },
+    "settingsRow": { "minHeight": 56, "background": "surface", "divider": "border" },
+    "focusRing": { "width": 3, "color": "accent", "offset": 2 }
+  },
+  "narrative": {
+    "creativeNorthStar": "静谧书桌 / The Quiet Reading Desk",
+    "personality": ["安静", "专注", "可靠"],
+    "layout": "内容优先的单栏框架，桌面端保持克制宽度，移动端使用固定底部导航",
+    "interaction": "标准控件、直接反馈、44px 触控目标、完整键盘焦点与可关闭动效",
+    "antiReferences": ["仿真木质书架", "过度装饰", "霓虹渐变", "玻璃拟态", "复杂动画", "全卡片化"]
+  }
+}

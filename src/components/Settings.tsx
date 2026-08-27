@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { ReadingSettings } from '../types'
 import { defaultSettings, themeColors } from '../types'
-import { getSettings, saveSettings, clearAllData, getAllBooks } from '../lib/db'
+import { createBackup, getSettings, saveSettings, clearAllData, getAllBooks, restoreBackup, type ReaderBackup } from '../lib/db'
 
 interface SettingsProps {
   onThemeChange?: () => void
@@ -10,6 +10,7 @@ interface SettingsProps {
 export function Settings({ onThemeChange }: SettingsProps) {
   const [settings, setSettings] = useState<ReadingSettings>(defaultSettings)
   const [bookCount, setBookCount] = useState(0)
+  const [status, setStatus] = useState('')
 
   useEffect(() => {
     (async () => {
@@ -24,14 +25,14 @@ export function Settings({ onThemeChange }: SettingsProps) {
     const ns = { ...settings, ...partial }
     setSettings(ns)
     await saveSettings(ns)
-    if (partial.theme) {
-      applyTheme(partial.theme)
+    if (partial.theme || partial.highContrast !== undefined || partial.reduceMotion !== undefined) {
+      applyTheme(ns)
       onThemeChange?.()
     }
   }
 
-  const applyTheme = (theme: keyof typeof themeColors) => {
-    const colors = themeColors[theme]
+  const applyTheme = (next: ReadingSettings) => {
+    const colors = themeColors[next.theme]
     const root = document.documentElement
     root.style.setProperty('--bg', colors.bg)
     root.style.setProperty('--bg-secondary', colors.bgSecondary)
@@ -40,6 +41,45 @@ export function Settings({ onThemeChange }: SettingsProps) {
     root.style.setProperty('--text-secondary', colors.textSecondary)
     root.style.setProperty('--accent', colors.accent)
     root.style.setProperty('--border', colors.border)
+    root.dataset.contrast = next.highContrast ? 'high' : 'normal'
+    root.dataset.motion = next.reduceMotion ? 'reduced' : 'full'
+  }
+
+  const handleExport = async () => {
+    try {
+      setStatus('正在生成本地备份…')
+      const backup = await createBackup()
+      const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: 'application/json' }))
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `书海备份-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setStatus('备份已导出')
+    } catch (error) {
+      setStatus(`导出失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const handleImport = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json,.json'
+    input.onchange = async event => {
+      const file = (event.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      if (!confirm('恢复备份将替换当前书库、进度、书签和设置。是否继续？')) return
+      try {
+        setStatus('正在恢复备份…')
+        const backup = JSON.parse(await file.text()) as ReaderBackup
+        await restoreBackup(backup)
+        setStatus('恢复完成，正在刷新…')
+        window.setTimeout(() => window.location.reload(), 500)
+      } catch (error) {
+        setStatus(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    input.click()
   }
 
   const handleClearData = async () => {
@@ -157,6 +197,36 @@ export function Settings({ onThemeChange }: SettingsProps) {
               >滚动</button>
             </div>
           </div>
+
+          <div className="setting-row">
+            <div className="setting-row-info">
+              <span className="setting-row-label">每日阅读目标</span>
+              <span className="setting-row-value">{settings.readingGoalMinutes} 分钟</span>
+            </div>
+            <input
+              type="range"
+              className="setting-row-slider"
+              min="10" max="120" step="5"
+              value={settings.readingGoalMinutes}
+              onChange={(e) => update({ readingGoalMinutes: parseInt(e.target.value) })}
+            />
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row-info setting-copy">
+              <span className="setting-row-label">高对比度</span>
+              <small>增强文字、边框和焦点可见性</small>
+            </div>
+            <button className={`switch ${settings.highContrast ? 'active' : ''}`} onClick={() => update({ highContrast: !settings.highContrast })} role="switch" aria-checked={settings.highContrast}><span /></button>
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row-info setting-copy">
+              <span className="setting-row-label">减少动态效果</span>
+              <small>关闭抽屉和状态切换动画</small>
+            </div>
+            <button className={`switch ${settings.reduceMotion ? 'active' : ''}`} onClick={() => update({ reduceMotion: !settings.reduceMotion })} role="switch" aria-checked={settings.reduceMotion}><span /></button>
+          </div>
         </section>
 
         {/* 数据管理 */}
@@ -168,6 +238,11 @@ export function Settings({ onThemeChange }: SettingsProps) {
             </div>
             <span className="setting-row-value">{bookCount} 本</span>
           </div>
+          <div className="data-actions">
+            <button className="btn" onClick={handleExport}>导出完整备份</button>
+            <button className="btn" onClick={handleImport}>恢复备份</button>
+          </div>
+          {status && <p className="settings-status" role="status">{status}</p>}
           <button className="settings-danger-btn" onClick={handleClearData}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -202,6 +277,10 @@ export function Settings({ onThemeChange }: SettingsProps) {
             <div className="about-feature">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
               <span>本地存储，隐私安全</span>
+            </div>
+            <div className="about-feature">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+              <span>可导出备份，不被应用锁定</span>
             </div>
           </div>
         </section>
